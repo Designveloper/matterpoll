@@ -39,7 +39,7 @@ func (p *Poll) ToPostActions(siteURL, pluginID, authorName string) []*model.Slac
 		Name: "Delete Poll",
 		Type: model.POST_ACTION_TYPE_BUTTON,
 		Integration: &model.PostActionIntegration{
-			URL: fmt.Sprintf("%s/plugins/%s/api/v1/polls/%s/delete", siteURL, pluginID, p.ID),
+			URL: fmt.Sprintf("%s/plugins/%s/api/v1/polls/%s/delete/request", siteURL, pluginID, p.ID),
 		},
 	})
 
@@ -47,7 +47,7 @@ func (p *Poll) ToPostActions(siteURL, pluginID, authorName string) []*model.Slac
 		Name: "End Poll",
 		Type: model.POST_ACTION_TYPE_BUTTON,
 		Integration: &model.PostActionIntegration{
-			URL: fmt.Sprintf("%s/plugins/%s/api/v1/polls/%s/end", siteURL, pluginID, p.ID),
+			URL: fmt.Sprintf("%s/plugins/%s/api/v1/polls/%s/end/request", siteURL, pluginID, p.ID),
 		},
 	})
 

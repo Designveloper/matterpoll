@@ -47,6 +47,7 @@ func (p *MatterpollPlugin) InitAPI() *mux.Router {
 	pollRouter.HandleFunc("/option/add", p.handleAddOption).Methods("POST")
 	pollRouter.HandleFunc("/option/add/request", p.handleAddOptionDialogRequest).Methods("POST")
 	pollRouter.HandleFunc("/end", p.handleEndPoll).Methods("POST")
+	pollRouter.HandleFunc("/end/request", p.handleEndPollDialogRequest).Methods("POST")
 	pollRouter.HandleFunc("/delete", p.handleDeletePoll).Methods("POST")
 	return r
 }
@@ -262,6 +263,61 @@ func (p *MatterpollPlugin) handleAddOptionDialogRequest(w http.ResponseWriter, r
 
 func (p *MatterpollPlugin) handleEndPoll(w http.ResponseWriter, r *http.Request) {
 	pollID := mux.Vars(r)["id"]
+
+	request := model.SubmitDialogRequestFromJson(r.Body)
+	if request == nil {
+		p.API.LogError("failed to decode request")
+		p.SendEphemeralPost(request.ChannelId, request.UserId, commandGenericError)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	poll, err := p.Store.Poll().Get(pollID)
+	if err != nil {
+		p.API.LogError("failed to get poll", "err", err.Error())
+		p.SendEphemeralPost(request.ChannelId, request.UserId, commandGenericError)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	displayName, appErr := p.ConvertCreatorIDToDisplayName(poll.Creator)
+	if appErr != nil {
+		p.API.LogError("failed to get display name for creator", "err", appErr.Error())
+		p.SendEphemeralPost(request.ChannelId, request.UserId, commandGenericError)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	post, appErr := poll.ToEndPollPost(displayName, p.ConvertUserIDToDisplayName)
+	if appErr != nil {
+		p.API.LogError("failed to create end poll post", "err", appErr.Error())
+		p.SendEphemeralPost(request.ChannelId, request.UserId, commandGenericError)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	post.Id = request.CallbackId
+	if _, appErr = p.API.UpdatePost(post); appErr != nil {
+		p.API.LogError("failed to update post", "err", appErr.Error())
+		p.SendEphemeralPost(request.ChannelId, request.UserId, commandGenericError)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if err := p.Store.Poll().Delete(poll); err != nil {
+		p.API.LogError("failed to delete poll", "err", err.Error())
+		p.SendEphemeralPost(request.ChannelId, request.UserId, commandGenericError)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	p.postEndPollAnnouncement(request, poll.Question)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (p *MatterpollPlugin) handleEndPollDialogRequest(w http.ResponseWriter, r *http.Request) {
+	pollID := mux.Vars(r)["id"]
 	response := &model.PostActionIntegrationResponse{}
 
 	request := model.PostActionIntegrationRequestFromJson(r.Body)
@@ -289,42 +345,39 @@ func (p *MatterpollPlugin) handleEndPoll(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	displayName, appErr := p.ConvertCreatorIDToDisplayName(poll.Creator)
-	if appErr != nil {
+	siteURL := *p.ServerConfig.ServiceSettings.SiteURL
+	dialog := model.OpenDialogRequest{
+		TriggerId: request.TriggerId,
+		URL:       fmt.Sprintf("%s/plugins/%s/api/v1/polls/%s/end", siteURL, PluginId, pollID),
+		Dialog: model.Dialog{
+			Title:       "Confirm Poll Delete",
+			IconURL:     fmt.Sprintf(responseIconURL, siteURL, PluginId),
+			CallbackId:  request.PostId,
+			SubmitLabel: "Delete",
+			Elements:    []model.DialogElement{{}},
+		},
+	}
+
+	if appErr := p.API.OpenInteractiveDialog(dialog); appErr != nil {
+		p.API.LogError("failed to open add option dialog ", "err", appErr.Error())
 		response.EphemeralText = commandGenericError
 		writePostActionIntegrationResponse(w, response)
 		return
 	}
-
-	response.Update, appErr = poll.ToEndPollPost(displayName, p.ConvertUserIDToDisplayName)
-	if appErr != nil {
-		response.EphemeralText = commandGenericError
-		writePostActionIntegrationResponse(w, response)
-		return
-	}
-
-	if err := p.Store.Poll().Delete(poll); err != nil {
-		response.EphemeralText = commandGenericError
-		writePostActionIntegrationResponse(w, response)
-		return
-	}
-
-	p.postEndPollAnnouncement(request, poll.Question)
-
 	writePostActionIntegrationResponse(w, response)
 }
 
-func (p *MatterpollPlugin) postEndPollAnnouncement(request *model.PostActionIntegrationRequest, question string) {
+func (p *MatterpollPlugin) postEndPollAnnouncement(request *model.SubmitDialogRequest, question string) {
 	team, err := p.API.GetTeam(request.TeamId)
 	if err != nil {
 		p.API.LogError(endPollAnnouncementPostError, "details", fmt.Sprintf("failed to GetTeam with TeamId: %s", request.TeamId))
 		return
 	}
-	permalink := fmt.Sprintf("%s/%s/pl/%s", *p.ServerConfig.ServiceSettings.SiteURL, team.Name, request.PostId)
+	permalink := fmt.Sprintf("%s/%s/pl/%s", *p.ServerConfig.ServiceSettings.SiteURL, team.Name, request.CallbackId)
 
-	pollPost, err := p.API.GetPost(request.PostId)
+	pollPost, err := p.API.GetPost(request.CallbackId)
 	if err != nil {
-		p.API.LogError(endPollAnnouncementPostError, "details", fmt.Sprintf("failed to GetPost with PostId: %s", request.PostId))
+		p.API.LogError(endPollAnnouncementPostError, "details", fmt.Sprintf("failed to GetPost with PostId: %s", request.CallbackId))
 		return
 	}
 	channelID := pollPost.ChannelId
@@ -332,7 +385,7 @@ func (p *MatterpollPlugin) postEndPollAnnouncement(request *model.PostActionInte
 	endPost := &model.Post{
 		UserId:    request.UserId,
 		ChannelId: channelID,
-		RootId:    request.PostId,
+		RootId:    request.CallbackId,
 		Message:   fmt.Sprintf(endPollSuccessfullyFormat, question, permalink),
 		Type:      model.POST_DEFAULT,
 		Props: model.StringInterface{
