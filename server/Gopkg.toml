@@ -5,7 +5,7 @@
 
 [[constraint]]
   name = "github.com/mattermost/mattermost-server"
-  version ="~5.6.0"
+  branch = "mm-13116-bot-plugin-api"
 
 [[constraint]]
   name = "github.com/stretchr/testify"

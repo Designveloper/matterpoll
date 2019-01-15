@@ -33,6 +33,15 @@ const minimumServerVersion = "5.6.0"
 
 // OnActivate ensures a configuration is set and initialises the API
 func (p *MatterpollPlugin) OnActivate() error {
+	bot := &model.Bot{
+		Username:    "matterpoll",
+		DisplayName: "Matterpoll",
+		Description: "Some description",
+	}
+	if _, err := p.API.CreateBot(bot); err != nil {
+		return err
+	}
+
 	if err := p.checkServerVersion(); err != nil {
 		return err
 	}
